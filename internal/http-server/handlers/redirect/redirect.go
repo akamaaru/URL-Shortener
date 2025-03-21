@@ -1,0 +1,73 @@
+package redirect
+
+import (
+	"errors"
+	"log/slog"
+	"net/http"
+
+	"github.com/akamaaru/url-shortener/internal/lib/api/response"
+	"github.com/akamaaru/url-shortener/internal/lib/logger/sl"
+	"github.com/akamaaru/url-shortener/internal/storage"
+
+	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
+	"github.com/go-chi/render"
+)
+
+type Request struct {}
+
+type Response struct {
+	response.Response
+	URL string
+}
+
+//go:generate go run github.com/vektra/mockery/v2@v2.53.3 --name=URLGetter
+type URLGetter interface {
+	GetURL(alias string) (string, error)
+}
+
+func New(log *slog.Logger, urlGetter URLGetter) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		const op = "handlers.redirect.New"
+
+		log = log.With(
+			slog.String("op", op),
+			slog.String("request_id", middleware.GetReqID(r.Context())),
+		)
+
+		alias := chi.URLParam(r, "alias")
+		if alias == "" {
+			log.Info("alias is empty")
+			render.JSON(w, r, response.Error("invalid request"))
+			return
+		}
+
+		log.Info("alias decoded", slog.Any("alias", alias))
+
+		// TODO validate on non-existing alias
+
+		url, err := urlGetter.GetURL(alias)
+		if errors.Is(err, storage.ErrURLNotFound) {
+			log.Info("url not found", "alias", alias)
+			render.JSON(w, r, response.Error("not found"))
+			return
+		} else if err != nil {
+			log.Error("failed to get url", sl.Err(err))
+			render.JSON(w, r, response.Error("internal error"))
+			return
+		}
+
+		log.Info("got url", slog.String("url", url))
+
+		http.Redirect(w, r, url, http.StatusFound)
+
+		responseOK(w, r, url)
+	}
+}
+
+func responseOK(w http.ResponseWriter, r *http.Request, url string) {
+	render.JSON(w, r, Response{
+		Response: 	response.OK(),
+		URL: 		url,
+	})
+}
